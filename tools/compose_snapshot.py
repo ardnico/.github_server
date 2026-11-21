@@ -19,10 +19,43 @@ DEFAULT_SNAPSHOT = Path('/var/lib/server-ops-kit/compose-state/snapshot.json')
 DEFAULT_CONFIG = Path('/etc/svc-update/config.toml')
 DEFAULT_UPDATER = Path('/usr/local/bin/svc-update')
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z')
-VERSION = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.+:-]{0,127}\Z')
+VERSION = re.compile(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([a-z0-9][a-z0-9._-]*))?\Z')
 STATUS = re.compile(r'([^: ]+): configured=([^, ]+), auto_update=(True|False), interrupted=(True|False)\Z')
 CHECK = re.compile(r'([^: ]+): ([^ ]+) -> (.+)\Z')
 MAX_AGE_SECONDS = 30 * 60
+TIMER = 'server-ops-compose-snapshot.timer'
+SERVICE = 'server-ops-compose-snapshot.service'
+
+
+def version_parts(value):
+    match = VERSION.fullmatch(value) if isinstance(value, str) and len(value) <= 128 else None
+    if not match:
+        raise ValueError('invalid updater version')
+    return tuple(map(int, match.group(1, 2, 3))), match.group(4) or ''
+
+
+def validate_directories(directory, *, require_root=True, stop_at=Path('/')):
+    directory = directory.absolute()
+    stop_at = stop_at.absolute()
+    if not directory.is_relative_to(stop_at):
+        raise PermissionError('snapshot is outside trusted directory chain')
+    while True:
+        info = directory.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o022 or
+                (require_root and info.st_uid != 0)):
+            raise PermissionError(f'untrusted snapshot directory: {directory}')
+        if directory == stop_at:
+            break
+        directory = directory.parent
+
+
+def verify_publisher_state():
+    active = subprocess.run(['/usr/bin/systemctl', 'is-active', '--quiet', TIMER],
+                            stdin=subprocess.DEVNULL, capture_output=True, timeout=5, check=False)
+    result = subprocess.run(['/usr/bin/systemctl', 'show', '--value', '--property=Result', SERVICE],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5, check=False)
+    if active.returncode != 0 or result.returncode != 0 or result.stdout.strip() != 'success':
+        raise ValueError('Compose snapshot timer stopped or publisher failed')
 
 
 def observation(args, timeout=120):
@@ -51,8 +84,9 @@ def collect(config, updater, now=None):
         match = STATUS.fullmatch(line)
         if match:
             name, version, auto, interrupted = match.groups()
-            if name not in names or not VERSION.fullmatch(version) or name in status:
+            if name not in names or name in status:
                 raise ValueError('unexpected updater status')
+            version_parts(version)
             status[name] = {'enabled': True, 'configured': version,
                             'auto_update': auto == 'True', 'interrupted': interrupted == 'True'}
         elif line.endswith(': disabled') and line[:-10] in names and line[:-10] not in status:
@@ -76,9 +110,15 @@ def collect(config, updater, now=None):
             checks[name] = {'status': 'unassessed', 'reason': 'unexpected updater check', 'observed_at': checked_at}
             continue
         candidate = match[3]
-        if candidate != 'no eligible update' and not VERSION.fullmatch(candidate):
-            checks[name] = {'status': 'unassessed', 'reason': 'unexpected candidate', 'observed_at': checked_at}
-            continue
+        if candidate != 'no eligible update':
+            try:
+                current_parts, flavor = version_parts(row['configured'])
+                candidate_parts, candidate_flavor = version_parts(candidate)
+                if candidate_parts <= current_parts or candidate_flavor != flavor:
+                    raise ValueError('candidate is not a newer version in the same flavor')
+            except ValueError:
+                checks[name] = {'status': 'unassessed', 'reason': 'unexpected candidate', 'observed_at': checked_at}
+                continue
         checks[name] = {'status': 'collected', 'current': match[2],
                         'candidate': None if candidate == 'no eligible update' else candidate,
                         'observed_at': checked_at}
@@ -90,9 +130,7 @@ def publish(snapshot, data, group):
     if os.geteuid() != 0:
         raise PermissionError('publisher must run as root')
     directory = snapshot.parent
-    info = directory.lstat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
-        raise PermissionError('snapshot directory must be root-owned and not writable by group/others')
+    validate_directories(directory)
     gid = grp.getgrnam(group).gr_gid
     fd, temporary = tempfile.mkstemp(prefix='.compose-', dir=directory)
     try:
@@ -115,10 +153,8 @@ def publish(snapshot, data, group):
 
 
 def read_snapshot(snapshot=DEFAULT_SNAPSHOT, *, enforce_ownership=True, now=None):
-    directory = snapshot.parent.lstat()
-    if (not stat.S_ISDIR(directory.st_mode) or directory.st_mode & 0o022 or
-            (enforce_ownership and directory.st_uid != 0)):
-        raise PermissionError('untrusted snapshot directory')
+    validate_directories(snapshot.parent, require_root=enforce_ownership,
+                         stop_at=Path('/') if enforce_ownership else snapshot.parent)
     fd = os.open(snapshot, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         info = os.fstat(fd)
@@ -134,6 +170,8 @@ def read_snapshot(snapshot=DEFAULT_SNAPSHOT, *, enforce_ownership=True, now=None
     now = now or datetime.now(timezone.utc)
     if data.get('schema_version') != 1 or data.get('hostname') != socket.gethostname():
         raise ValueError('snapshot schema or hostname mismatch')
+    if data.get('publication_status') != 'complete':
+        raise ValueError('snapshot publication is incomplete or failed')
     observed = datetime.fromisoformat(data['status_observed_at'])
     if observed.tzinfo is None or not 0 <= (now - observed).total_seconds() <= MAX_AGE_SECONDS:
         raise ValueError('snapshot expired or from the future')
@@ -170,12 +208,16 @@ def main():
     if args.action == 'publish':
         if os.geteuid() != 0:
             raise PermissionError('publisher must run as root')
+        publish(args.snapshot, {'schema_version': 1, 'hostname': socket.gethostname(),
+                                'publication_status': 'unavailable'}, args.reader_group)
         data = collect(args.config, args.updater)
+        data['publication_status'] = 'complete'
         publish(args.snapshot, data, args.reader_group)
         print(f"published snapshot for {len(data['status'])} services")
     else:
         if (args.kind == 'status' and args.service is not None) or (args.kind == 'check' and args.service is None):
             raise ValueError('invalid read action arguments')
+        verify_publisher_state()
         print(json.dumps(read_action(read_snapshot(), args.kind, args.service), ensure_ascii=False))
 
 

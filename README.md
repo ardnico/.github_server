@@ -36,7 +36,7 @@ python3 tools/run_plan.py --plan .server-ops/plans/my-plan.json --inventory .ser
 
 ### Compose の非特権読み取り
 
-`svc-update status/check` は root 専用の設定とバックアップ先ロックを開くため、Copilot の非特権アカウントから直接起動しない。管理者が `tools/compose_snapshot.py publish` を定期実行し、登録済みサービスの現在版、候補版、更新設定、中断有無だけを `/var/lib/server-ops-kit/compose-state/snapshot.json` に発行する。ランナーの `compose-status/check` はこのファイルだけを読み、30分を超えた結果、他ホストの結果、未知のサービス、失敗したチェックを拒否する。候補は定期観測値であり、現在も更新可能という保証ではない。
+`svc-update status/check` は root 専用の設定とバックアップ先ロックを開くため、Copilot の非特権アカウントから直接起動しない。管理者が `tools/compose_snapshot.py publish` を定期実行し、登録済みサービスの現在版、候補版、更新設定、中断有無だけを `/var/lib/server-ops-kit/compose-state/snapshot.json` に発行する。ランナーの `compose-status/check` はこのファイルだけを読み、30分を超えた結果、他ホストの結果、未知のサービス、失敗したチェック、updater の版形式と一致しない候補を拒否する。発行開始時に旧結果を無効化し、ロック競合などで発行に失敗した後も旧候補を返さない。読取時は systemd の timer が active で発行 unit の Result が success であることも確認する。停電などで発行プロセスが途中停止した場合は無効化済みの状態が残る。上位ディレクトリも root 所有で group/others が書込不可であることを確認する。候補は定期観測値であり、現在も更新可能という保証ではない。
 
 管理者が検証 VM で以下を実施する。`kit-reader` は例として Copilot 専用ユーザーの名前。`/opt/server-ops-kit` 以下のコード、unit、updater の設定は root 所有で書き込み不可にする。updater の root 専用設定・Docker ソケット・バックアップ先への権限を `kit-reader` に与えない。
 
