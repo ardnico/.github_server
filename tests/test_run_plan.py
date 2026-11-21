@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from tools.run_plan import digest, validate, run
 
@@ -32,6 +33,12 @@ class PlanValidationTests(unittest.TestCase):
 
     def test_read_only_command(self):
         self.assertEqual(self.check(), [['systemctl', 'status', '--no-pager', '--lines=0', 'sshd.service']])
+
+    def test_compose_commands_only_read_snapshot(self):
+        self.plan['operations'] = [{'kind': 'compose-status'}, {'kind': 'compose-check', 'target': 'app'}]
+        commands = self.check()
+        self.assertEqual([c[2:] for c in commands], [['read', 'status'], ['read', 'check', 'app']])
+        self.assertTrue(all(c[0] == sys.executable and c[1].endswith('compose_snapshot.py') for c in commands))
 
     def test_rejects_shell_metacharacters(self):
         self.plan['operations'][0]['target'] = 'sshd;reboot'

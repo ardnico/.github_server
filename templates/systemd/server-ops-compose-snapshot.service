@@ -1,0 +1,15 @@
+[Unit]
+Description=Publish limited Compose observations for Server Ops Kit
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /opt/server-ops-kit/tools/compose_snapshot.py publish
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# Change the backup path here if config.toml uses another backup root. The updater opens its lock there.
+ReadWritePaths=/var/backups/svc-update /var/lib/server-ops-kit/compose-state

@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh limited Compose observations every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Unit=server-ops-compose-snapshot.service
+
+[Install]
+WantedBy=timers.target

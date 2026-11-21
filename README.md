@@ -10,7 +10,7 @@ License: MIT。公開リポジトリに実ホストの台帳、作業記録、�
 2. `server-ops` → `maintenance-planner` が要求を調査し、影響、前提、実行・検証・復旧条件を含む `plan.json` と人向け計画を作る。
 3. `server-ops` → `maintenance-executor` が読み取り計画を `tools/run_plan.py` で実行し、各操作の終了コードと結果を保存する。追加対応は新しい計画に戻す。
 
-現在実装する実行操作は `service-status`、`compose-status`、`compose-check` のみ。`compose-upgrade` と `--apply` は拒否する。構築、OS 更新、障害復旧、Compose 更新は調査・計画まで扱う。
+現在実装する実行操作は `service-status`、`compose-status`、`compose-check` のみ。後者2つは管理者が別途発行した限定スナップショットを非特権で読む。`compose-upgrade` と `--apply` は拒否する。構築、OS 更新、障害復旧、Compose 更新は調査・計画まで扱う。
 
 ## 利用開始
 
@@ -28,13 +28,33 @@ python3 tools/run_plan.py --plan .server-ops/plans/my-plan.json --inventory .ser
 
 計画の SHA は**最終編集後**に計算する。`run_plan.py` はホスト名、台帳のハッシュ、取得範囲・完全性・鮮度を照合し、未知の操作・任意のシェル文字列を拒否する。SHA 照合は変更検出であり、人の承認を証明しない。Copilot の `execute` 権限自体は OS の権限境界ではない。管理権限や Docker ソケットへアクセスできない検証用アカウントでのみ使用する。読み取りの外部コマンドにも副作用や通信の可能性があり、各ツールの設定を事前に確認する。
 
-実行記録は開始前から 0600 で保存し、各操作を `not_executed` / `running` / `completed` / `failed` / `result_unknown` に分ける。中断後の対象状態は `result_unknown` として現物を照合する。終了コード 0 でも外形・業務条件は `postconditions: not_assessed` のまま。更新の成功や本番運用可否を意味しない。
+実行記録は開始前から 0600 で保存し、各操作を `not_executed` / `running` / `completed` / `failed` / `result_unknown` に分ける。SIGINT/SIGTERM 中断後の対象状態は `result_unknown` として現物を照合する。SIGKILL・電源断では、終了時刻なしの `running` が残るか、記録自体が失われる可能性がある。これも結果不明とし、元の操作、対象の現物、updater の journal を管理者が照合するまで再実行しない。終了コード 0 でも外形・業務条件は `postconditions: not_assessed` のまま。更新の成功や本番運用可否を意味しない。
 
 ## 配置
 
 キット全体（`.github/`、`tools/`、`templates/`、`tests/`、`README.md`、`AGENTS.md`、`.gitignore`）を Copilot の対象リポジトリへ配置する。管理ホストに Python 3.11 以降が必要。実行時データは `.server-ops/` に保存し Git へコミットしない。収集 CLI が終了 2 のときは部分取得なので、記録を確認し再収集する。コンテナ内の収集結果をホストの台帳として使わない。
 
-定期レポートは `python3 tools/periodic_report.py --kind performance --output-dir .server-ops/reports` で送信せずに試す。セキュリティ報告も `--kind security` で試す。必要な配布元ツールとメタデータが使えなければ「未評価」で終了する。警告が出た場合も未評価とし、鮮度は別途確認する。送信する場合は `templates/report.example.json` を対象ホストの `/etc/server-ops-kit/report.json` に置いて宛先を設定し、専用アカウントにのみ読ませる。`templates/systemd/` のサービス・タイマーは `/opt/server-ops-kit`、レポート格納先 `/var/lib/server-ops-kit/reports`、ローカル時刻の 09:00/09:15 を前提にした**編集用ひな形**。対象ホストのパス・権限・タイムゾーン・SMTP リレーを確認してから導入する。事前に専用ユーザー `server-ops-reporter`、設定ディレクトリ、0700 の記録ディレクトリを用意し、コードは root 所有でレポーターが変更できないようにする。設定は root:server-ops-reporter の 0640 などで必要最小限に読ませ、`systemd-analyze verify` と送信先が無効なテスト環境で試す。メール送信は `--send` を指定したときだけ行い、記録の `delivery` は受信リレーまでの結果を示す。
+### Compose の非特権読み取り
+
+`svc-update status/check` は root 専用の設定とバックアップ先ロックを開くため、Copilot の非特権アカウントから直接起動しない。管理者が `tools/compose_snapshot.py publish` を定期実行し、登録済みサービスの現在版、候補版、更新設定、中断有無だけを `/var/lib/server-ops-kit/compose-state/snapshot.json` に発行する。ランナーの `compose-status/check` はこのファイルだけを読み、30分を超えた結果、他ホストの結果、未知のサービス、失敗したチェックを拒否する。候補は定期観測値であり、現在も更新可能という保証ではない。
+
+管理者が検証 VM で以下を実施する。`kit-reader` は例として Copilot 専用ユーザーの名前。`/opt/server-ops-kit` 以下のコード、unit、updater の設定は root 所有で書き込み不可にする。updater の root 専用設定・Docker ソケット・バックアップ先への権限を `kit-reader` に与えない。
+
+```sh
+groupadd --system server-ops-reader
+usermod -aG server-ops-reader kit-reader
+install -d -o root -g server-ops-reader -m 0750 /var/lib/server-ops-kit/compose-state
+install -o root -g root -m 0644 templates/systemd/server-ops-compose-snapshot.service /etc/systemd/system/
+install -o root -g root -m 0644 templates/systemd/server-ops-compose-snapshot.timer /etc/systemd/system/
+systemd-analyze verify /etc/systemd/system/server-ops-compose-snapshot.{service,timer}
+systemctl daemon-reload
+systemctl start server-ops-compose-snapshot.service
+systemctl enable --now server-ops-compose-snapshot.timer
+```
+
+上記は root で実行し、`kit-reader` はグループ変更後に再ログインする。実環境の updater パス（標準 `/usr/local/bin/svc-update`）、設定 `/etc/svc-update/config.toml`、バックアップルートと unit の `ReadWritePaths` を一致させる。root タイマーは固定の登録名だけを照会し、ユーザー入力を特権コマンドへ渡さない。配置後、`kit-reader` で `python3 tools/compose_snapshot.py read status` と `read check <登録名>` が動き、`svc-update status`、Docker ソケット、`sudo -n -l` には変更権限がないことを確認する。root タイマーが失敗・遅延すると読み取りも停止する。
+
+定期レポートは `python3 tools/periodic_report.py --kind performance --output-dir .server-ops/reports` で送信せずに試す。セキュリティ報告も `--kind security` で試す。必要な配布元ツールとメタデータが使えなければ「未評価」で終了する。警告が出た場合も未評価とし、鮮度は別途確認する。送信する場合は `templates/report.example.json` を対象ホストの `/etc/server-ops-kit/report.json` に置いて宛先を設定し、専用アカウントにのみ読ませる。レポート用の `templates/systemd/` は `/opt/server-ops-kit`、レポート格納先 `/var/lib/server-ops-kit/reports`、ローカル時刻の 09:00/09:15 を前提にした**編集用ひな形**。対象ホストのパス・権限・タイムゾーン・SMTP リレーを確認してから導入する。事前に専用ユーザー `server-ops-reporter`、設定ディレクトリを用意し、`install -d -o server-ops-reporter -g server-ops-reporter -m 0700 /var/lib/server-ops-kit/reports` として記録ディレクトリを作る。コードは root 所有でレポーターが変更できないようにする。設定は root:server-ops-reporter の 0640 などで必要最小限に読ませ、`systemd-analyze verify` と送信先が無効なテスト環境で試す。メール送信は `--send` を指定したときだけ行い、部分受理時は記録の受理・拒否件数を見て再送範囲を判断する。
 
 ## 前提、リスク、アンチゴール
 

@@ -76,6 +76,8 @@ def collect():
     # Keep unit names only. Descriptions and logs can contain private details.
     services['values'] = [line.split()[0] for line in services['values'] if line.split()]
     kernel = read_command(['uname', '-r'])
+    if kernel['status'] == 'complete' and (not kernel['values'] or not kernel['values'][0].strip()):
+        kernel.update(status='unassessed', error='empty kernel release')
     env = environment()
     status = ('complete' if release['ID'] and env['kind'] == 'host_or_vm' and
               all(field['status'] == 'complete' for field in (packages, services, kernel)) else 'partial')

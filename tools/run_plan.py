@@ -61,14 +61,14 @@ def validate(plan, inventory, plan_bytes, inventory_bytes, approved, apply, now=
         if kind == 'compose-status':
             if set(item) != {'kind'}:
                 raise ValueError('unexpected operation parameters')
-            cmd = ['svc-update', 'status']
+            cmd = [sys.executable, str(Path(__file__).with_name('compose_snapshot.py')), 'read', 'status']
         else:
             if set(item) != {'kind', 'target'} or not isinstance(item['target'], str) or not TARGET.fullmatch(item['target']):
                 raise ValueError('invalid target or parameters')
             if kind == 'service-status':
                 cmd = ['systemctl', 'status', '--no-pager', '--lines=0', item['target']]
             elif kind == 'compose-check':
-                cmd = ['svc-update', 'check', item['target']]
+                cmd = [sys.executable, str(Path(__file__).with_name('compose_snapshot.py')), 'read', 'check', item['target']]
         commands.append(cmd)
     return commands
 

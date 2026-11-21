@@ -5,7 +5,7 @@ import json
 import smtplib
 import tempfile
 import sys
-from tools.periodic_report import security_report, validate_mail_config, main
+from tools.periodic_report import security_report, validate_mail_config, delivery_result, main
 
 
 class ReportTests(unittest.TestCase):
@@ -48,6 +48,12 @@ class ReportTests(unittest.TestCase):
             report = json.loads(next(Path(tmp).glob('performance-*.json')).read_text())
             self.assertEqual(report['delivery']['status'], 'failed')
             self.assertEqual(report['delivery']['error_type'], 'SMTPRecipientsRefused')
+
+    def test_partial_relay_acceptance_is_distinct_from_total_refusal(self):
+        result = delivery_result({'no@example.invalid': (550, b'rejected')},
+                                 ['yes@example.invalid', 'no@example.invalid'])
+        self.assertEqual(result, {'status': 'partially_accepted_by_relay',
+                                  'accepted_count': 1, 'refused_count': 1, 'refused_codes': {'550': 1}})
 
 
 if __name__ == '__main__':

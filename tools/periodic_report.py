@@ -108,6 +108,16 @@ def update_private(path, report):
             os.unlink(name)
 
 
+def delivery_result(refused, recipients):
+    accepted = len(recipients) - len(refused)
+    codes = {}
+    for _address, response in refused.items():
+        code = response[0] if isinstance(response, (tuple, list)) and response else None
+        codes[str(code) if isinstance(code, int) else 'unknown'] = codes.get(str(code) if isinstance(code, int) else 'unknown', 0) + 1
+    return {'status': 'partially_accepted_by_relay' if accepted else 'failed',
+            'accepted_count': accepted, 'refused_count': len(refused), 'refused_codes': codes}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--kind', choices=('security', 'performance'), required=True)
@@ -136,17 +146,20 @@ def main():
                 if config.get('smtp_starttls'):
                     smtp.starttls()
                 refused = smtp.send_message(message)
-            if refused:
-                raise smtplib.SMTPRecipientsRefused(refused)
-            report['delivery'] = {'status': 'accepted_by_relay'}
-            print('email accepted by configured SMTP relay (final delivery unverified)')
+            report['delivery'] = (delivery_result(refused, config['mail_to']) if refused else
+                                  {'status': 'accepted_by_relay', 'accepted_count': len(config['mail_to']), 'refused_count': 0})
+            print(f"email {report['delivery']['status']} (final delivery unverified)")
+        except smtplib.SMTPRecipientsRefused as exc:
+            report['delivery'] = delivery_result(exc.recipients, config['mail_to'])
+            report['delivery']['error_type'] = 'SMTPRecipientsRefused'
+            print(f"email delivery failed: SMTPRecipientsRefused; record: {path}")
         except (smtplib.SMTPException, OSError) as exc:
             report['delivery'] = {'status': 'failed', 'error_type': type(exc).__name__,
                                   'smtp_code': getattr(exc, 'smtp_code', None)}
             print(f"email delivery failed: {type(exc).__name__}; record: {path}")
         finally:
             update_private(path, report)
-    if report['delivery']['status'] == 'failed':
+    if report['delivery']['status'] in ('failed', 'partially_accepted_by_relay'):
         return 3
     return 0 if report['result']['status'] == 'collected' else 2
 
