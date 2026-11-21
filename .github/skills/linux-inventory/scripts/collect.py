@@ -77,7 +77,7 @@ def collect():
     services['values'] = [line.split()[0] for line in services['values'] if line.split()]
     kernel = read_command(['uname', '-r'])
     env = environment()
-    status = ('complete' if env['kind'] == 'host_or_vm' and
+    status = ('complete' if release['ID'] and env['kind'] == 'host_or_vm' and
               all(field['status'] == 'complete' for field in (packages, services, kernel)) else 'partial')
     return {
         'schema_version': 1,

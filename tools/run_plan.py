@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 TARGET = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_.@-]{0,127}\Z')
@@ -125,12 +126,21 @@ def run(plan, inventory, commands, output_dir, plan_hash):
                                          stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, start_new_session=True)
                 if interrupted and child.poll() is None:
                     os.killpg(child.pid, signal.SIGTERM)
-                try:
-                    out, err = child.communicate(timeout=1800)
-                except subprocess.TimeoutExpired:
-                    os.killpg(child.pid, signal.SIGKILL)
-                    out, err = child.communicate()
-                    interrupted.append('timeout')
+                deadline = time.monotonic() + 1800
+                interrupted_at = None
+                while True:
+                    try:
+                        out, err = child.communicate(timeout=1)
+                        break
+                    except subprocess.TimeoutExpired:
+                        if interrupted and interrupted_at is None:
+                            interrupted_at = time.monotonic()
+                        if time.monotonic() >= deadline or (interrupted_at and time.monotonic() - interrupted_at >= 5):
+                            os.killpg(child.pid, signal.SIGKILL)
+                            out, err = child.communicate()
+                            if not interrupted:
+                                interrupted.append('timeout')
+                            break
                 step.update(exit_code=child.returncode, stdout=redact(out), stderr=redact(err))
                 step['status'] = 'result_unknown' if interrupted else ('completed' if child.returncode == 0 else 'failed')
             except Exception as exc:

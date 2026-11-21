@@ -91,6 +91,31 @@ class PlanValidationTests(unittest.TestCase):
                     proc.kill()
                     proc.wait()
 
+    def test_sigterm_escalates_if_child_ignores_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / 'ready'
+            child_code = ("import signal,time; from pathlib import Path; "
+                          "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                          f"Path({str(marker)!r}).write_text('ready'); time.sleep(30)")
+            runner = ("from tools.run_plan import run; from pathlib import Path; "
+                      f"run({{'plan_id':'stubborn'}}, {{'hostname':'lab-host'}}, "
+                      f"[[{sys.executable!r},'-c',{child_code!r}]], Path({tmp!r}), 'a'*64)")
+            proc = subprocess.Popen([sys.executable, '-c', runner], cwd=Path(__file__).resolve().parents[1])
+            try:
+                deadline = time.monotonic() + 5
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertTrue(marker.exists())
+                proc.send_signal(signal.SIGTERM)
+                proc.wait(timeout=9)
+                record = json.loads(next(Path(tmp).glob('stubborn-*.json')).read_text())
+                self.assertEqual(record['steps'][0]['status'], 'result_unknown')
+                self.assertEqual(record['status'], 'interrupted')
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+
     def test_rejects_wrong_host_and_stale_inventory(self):
         self.plan['hostname'] = 'another-host'
         with self.assertRaisesRegex(ValueError, 'host mismatch'):
