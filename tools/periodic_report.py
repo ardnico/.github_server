@@ -13,6 +13,7 @@ import smtplib
 import socket
 import subprocess
 import uuid
+import tempfile
 
 
 def os_id():
@@ -42,11 +43,12 @@ def security_report(distro=None):
                                 stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {'status': 'unassessed', 'reason': type(exc).__name__, 'distro': distro}
-    return {'status': 'collected' if result.returncode == 0 else 'unassessed', 'distro': distro,
+    return {'status': 'collected' if result.returncode == 0 and not result.stderr.strip() else 'unassessed', 'distro': distro,
             'command': command, 'exit_code': result.returncode, 'interpretation': interpretation,
             'metadata_freshness': 'not independently verified',
             'output': result.stdout[:20000] if result.returncode == 0 else '',
-            'error': result.stderr[:1000] if result.returncode else ''}
+            'error': result.stderr[:1000],
+            'reason': 'advisory command emitted a warning; metadata or assessment may be incomplete' if result.stderr.strip() else None}
 
 
 def performance_report():
@@ -91,6 +93,21 @@ def write_private(output_dir, report):
     return path
 
 
+def update_private(path, report):
+    fd, name = tempfile.mkstemp(prefix='.report-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            os.fchmod(f.fileno(), 0o600)
+            json.dump(report, f, ensure_ascii=False, indent=2)
+            f.write('\n')
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--kind', choices=('security', 'performance'), required=True)
@@ -104,7 +121,8 @@ def main():
     if a.send:
         validate_mail_config(config)
     report = {'kind': a.kind, 'hostname': socket.gethostname(), 'observed_at': datetime.now(timezone.utc).isoformat(),
-              'result': security_report() if a.kind == 'security' else performance_report()}
+              'result': security_report() if a.kind == 'security' else performance_report(),
+              'delivery': {'status': 'pending' if a.send else 'not_requested'}}
     path = write_private(a.output_dir, report)
     print(f"saved {path}: {report['result']['status']}")
     if a.send:
@@ -113,11 +131,23 @@ def main():
         message['From'] = config['mail_from']
         message['To'] = ', '.join(config['mail_to'])
         message.set_content(json.dumps(report, ensure_ascii=False, indent=2)[:25000])
-        with smtplib.SMTP(config['smtp_host'], config['smtp_port'], timeout=15) as smtp:
-            if config.get('smtp_starttls'):
-                smtp.starttls()
-            smtp.send_message(message)
-        print('email accepted by configured SMTP relay')
+        try:
+            with smtplib.SMTP(config['smtp_host'], config['smtp_port'], timeout=15) as smtp:
+                if config.get('smtp_starttls'):
+                    smtp.starttls()
+                refused = smtp.send_message(message)
+            if refused:
+                raise smtplib.SMTPRecipientsRefused(refused)
+            report['delivery'] = {'status': 'accepted_by_relay'}
+            print('email accepted by configured SMTP relay (final delivery unverified)')
+        except (smtplib.SMTPException, OSError) as exc:
+            report['delivery'] = {'status': 'failed', 'error_type': type(exc).__name__,
+                                  'smtp_code': getattr(exc, 'smtp_code', None)}
+            print(f"email delivery failed: {type(exc).__name__}; record: {path}")
+        finally:
+            update_private(path, report)
+    if report['delivery']['status'] == 'failed':
+        return 3
     return 0 if report['result']['status'] == 'collected' else 2
 
 

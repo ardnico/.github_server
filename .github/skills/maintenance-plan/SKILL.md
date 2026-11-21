@@ -7,6 +7,6 @@ description: Linux サーバの構築、更新、障害調査に必要な事前�
 
 対象、目的、作業窓、台帳ハッシュ、現状の根拠、リスク、事前検査、実行操作、成功判定、停止・復旧条件を人向け文書へまとめる。
 
-機械実行する操作は `templates/plan.example.json` の構造に合わせ、`service-status` / `compose-status` / `compose-check` / `compose-upgrade` に限定する。構築・OS 更新・復旧コマンドなどは手動手順とし、自動実行の対象に見せない。適用前に対象固有のバックアップと復旧演習を確かめる。
+機械実行する操作は `templates/plan.example.json` の構造に合わせ、`service-status` / `compose-status` / `compose-check` に限定する。構築・OS 更新・Compose 更新・復旧は調査計画だけを作り、ランナーへの変更操作を作らない。適用前に対象固有のバックアップと復旧演習を確かめる。
 
 台帳に書かれた事実、今回の読み取り結果、推測、未確認を混同しない。実施後の追加対応は新しい計画として提示する。

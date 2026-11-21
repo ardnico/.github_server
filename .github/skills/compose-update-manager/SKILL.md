@@ -5,6 +5,8 @@ description: ardnico/compose-update-manager を使い Docker Compose の公開 H
 
 # Compose 更新連携
 
+本 Kit では更新の自動適用を無効化している。`svc-update upgrade --apply` や `restore --apply` を Agent の端末権限から呼び出さない。手動の変更計画には、対象ストレージ構成での手動・異常時復旧の実証と、承認・実行アカウントの分離を前提条件として明記する。
+
 正本の `https://github.com/ardnico/compose-update-manager/blob/main/README.md` と `doc/README.md` を作業時に再確認する。v0.3 preview には `local_build`、`keep_previous_images`、`check`、対象サービスの `upgrade --apply`、format 3 の対象別バックアップがある。自身で更新処理を再実装しない。
 
 1. `svc-update status` と登録名に対する `svc-update check <name>` で対象を特定。登録名と Compose の service key を混同しない。

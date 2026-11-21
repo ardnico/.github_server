@@ -9,13 +9,15 @@ import os
 from pathlib import Path
 import re
 import socket
+import signal
 import subprocess
 import sys
+import tempfile
 import uuid
 
 TARGET = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_.@-]{0,127}\Z')
 SHA = re.compile(r'[a-f0-9]{64}\Z')
-SUPPORTED = {'service-status', 'compose-status', 'compose-check', 'compose-upgrade'}
+SUPPORTED = {'service-status', 'compose-status', 'compose-check'}
 MAX_AGE_SECONDS = 24 * 3600
 
 
@@ -24,6 +26,8 @@ def digest(data):
 
 
 def validate(plan, inventory, plan_bytes, inventory_bytes, approved, apply, now=None, hostname=None):
+    if apply:
+        raise ValueError('mutation disabled: no separate approval and privilege broker is installed')
     now = now or datetime.now(timezone.utc)
     hostname = hostname or socket.gethostname()
     if not SHA.fullmatch(approved or '') or approved != digest(plan_bytes):
@@ -36,6 +40,12 @@ def validate(plan, inventory, plan_bytes, inventory_bytes, approved, apply, now=
         raise ValueError('host mismatch')
     if plan.get('inventory_sha256') != digest(inventory_bytes):
         raise ValueError('inventory hash mismatch')
+    if (inventory.get('collection_status') != 'complete' or
+        inventory.get('environment', {}).get('kind') != 'host_or_vm' or
+        not inventory.get('os_release', {}).get('ID') or not inventory.get('kernel') or
+        inventory.get('package_manager') not in ('dpkg', 'rpm') or
+        any(inventory.get(key, {}).get('status') != 'complete' for key in ('packages', 'running_service_names'))):
+        raise ValueError('inventory is incomplete or target scope is not a host/VM')
     observed = datetime.fromisoformat(inventory['observed_at'].replace('Z', '+00:00'))
     if observed.tzinfo is None or not 0 <= (now - observed).total_seconds() <= MAX_AGE_SECONDS:
         raise ValueError('inventory is expired or its timestamp is invalid')
@@ -45,7 +55,7 @@ def validate(plan, inventory, plan_bytes, inventory_bytes, approved, apply, now=
     commands = []
     for item in operations:
         if not isinstance(item, dict) or item.get('kind') not in SUPPORTED:
-            raise ValueError('unknown operation')
+            raise ValueError('unknown or disabled operation')
         kind = item['kind']
         if kind == 'compose-status':
             if set(item) != {'kind'}:
@@ -58,10 +68,6 @@ def validate(plan, inventory, plan_bytes, inventory_bytes, approved, apply, now=
                 cmd = ['systemctl', 'status', '--no-pager', '--lines=0', item['target']]
             elif kind == 'compose-check':
                 cmd = ['svc-update', 'check', item['target']]
-            else:
-                if not apply:
-                    raise ValueError('compose-upgrade requires --apply')
-                cmd = ['svc-update', 'upgrade', item['target'], '--apply']
         commands.append(cmd)
     return commands
 
@@ -71,36 +77,81 @@ def redact(value):
     return re.sub(r'(?im)\b(password|token|secret|api[_-]?key)\b\s*[:=]\s*\S+', r'\1=[REDACTED]', value)[:32768]
 
 
+def save(path, result):
+    fd, name = tempfile.mkstemp(prefix='.run-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            os.fchmod(f.fileno(), 0o600)
+            json.dump(result, f, ensure_ascii=False, indent=2)
+            f.write('\n')
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
 def run(plan, inventory, commands, output_dir, plan_hash):
     output_dir.mkdir(parents=True, exist_ok=True)
     output_dir.chmod(0o700)
     result = {'plan_id': plan['plan_id'], 'plan_sha256': plan_hash, 'hostname': inventory['hostname'],
-              'started_at': datetime.now(timezone.utc).isoformat(), 'steps': [], 'status': 'running'}
+              'started_at': datetime.now(timezone.utc).isoformat(),
+              'steps': [{'command': cmd, 'status': 'not_executed'} for cmd in commands],
+              'status': 'running', 'postconditions': 'not_assessed'}
     path = output_dir / f"{plan['plan_id']}-{uuid.uuid4().hex[:12]}.json"
-    try:
-        for cmd in commands:
-            started = datetime.now(timezone.utc).isoformat()
+    save(path, result)
+    interrupted = []
+    child = None
+
+    def on_signal(signum, _frame):
+        interrupted.append(signal.Signals(signum).name)
+        if child is not None and child.poll() is None:
             try:
-                completed = subprocess.run(cmd, text=True, capture_output=True, timeout=1800, check=False,
-                                           stdin=subprocess.DEVNULL)
-                step = {'command': cmd, 'started_at': started, 'exit_code': completed.returncode,
-                        'stdout': redact(completed.stdout), 'stderr': redact(completed.stderr)}
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                step = {'command': cmd, 'started_at': started, 'exit_code': None,
-                        'stdout': '', 'stderr': type(exc).__name__}
-            step['finished_at'] = datetime.now(timezone.utc).isoformat()
-            result['steps'].append(step)
-            if step['exit_code'] != 0:
-                result['status'] = 'failed; remaining operations not executed'
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+    previous = {sig: signal.signal(sig, on_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        for step in result['steps']:
+            if interrupted:
                 break
-        else:
-            result['status'] = 'commands completed; verify postconditions separately'
+            step['status'] = 'running'
+            step['started_at'] = datetime.now(timezone.utc).isoformat()
+            save(path, result)
+            try:
+                child = subprocess.Popen(step['command'], text=True, stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, start_new_session=True)
+                if interrupted and child.poll() is None:
+                    os.killpg(child.pid, signal.SIGTERM)
+                try:
+                    out, err = child.communicate(timeout=1800)
+                except subprocess.TimeoutExpired:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    out, err = child.communicate()
+                    interrupted.append('timeout')
+                step.update(exit_code=child.returncode, stdout=redact(out), stderr=redact(err))
+                step['status'] = 'result_unknown' if interrupted else ('completed' if child.returncode == 0 else 'failed')
+            except Exception as exc:
+                step.update(exit_code=None, stdout='', stderr=type(exc).__name__, status='result_unknown')
+            finally:
+                child = None
+                step['finished_at'] = datetime.now(timezone.utc).isoformat()
+                save(path, result)
+            if step['status'] != 'completed':
+                break
+        result['status'] = ('interrupted' if interrupted else
+                            'completed' if all(s['status'] == 'completed' for s in result['steps']) else 'failed')
+        if interrupted:
+            result['interruption'] = interrupted[0]
     finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+        if result['status'] == 'running':
+            result['status'] = 'result_unknown'
         result['finished_at'] = datetime.now(timezone.utc).isoformat()
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-            f.write('\n')
+        save(path, result)
     return path, result
 
 
@@ -117,7 +168,7 @@ def main():
     commands = validate(plan, inventory, plan_bytes, inventory_bytes, a.confirm_sha, a.apply)
     path, result = run(plan, inventory, commands, a.output_dir, digest(plan_bytes))
     print(f"{result['status']}; record: {path}")
-    return 0 if result['status'].startswith('commands completed') else 1
+    return 0 if result['status'] == 'completed' else 1
 
 
 if __name__ == '__main__':

@@ -2,15 +2,24 @@
 
 from datetime import datetime, timezone, timedelta
 import json
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import tempfile
+import time
 import unittest
 
-from tools.run_plan import digest, validate
+from tools.run_plan import digest, validate, run
 
 
 class PlanValidationTests(unittest.TestCase):
     def setUp(self):
         self.now = datetime.now(timezone.utc)
-        self.inventory = {'schema_version': 1, 'hostname': 'lab-host', 'observed_at': self.now.isoformat()}
+        self.inventory = {'schema_version': 1, 'hostname': 'lab-host', 'observed_at': self.now.isoformat(),
+                          'collection_status': 'complete', 'environment': {'kind': 'host_or_vm'},
+                          'os_release': {'ID': 'ubuntu'}, 'kernel': '6.8', 'package_manager': 'dpkg',
+                          'packages': {'status': 'complete'}, 'running_service_names': {'status': 'complete'}}
         self.inventory_bytes = json.dumps(self.inventory).encode()
         self.plan = {'schema_version': 1, 'plan_id': 'lab-01', 'hostname': 'lab-host', 'inventory_sha256': digest(self.inventory_bytes),
                      'operations': [{'kind': 'service-status', 'target': 'sshd.service'}]}
@@ -29,11 +38,58 @@ class PlanValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.check()
 
-    def test_requires_apply_for_upgrade(self):
+    def test_rejects_change_even_with_apply(self):
         self.plan['operations'] = [{'kind': 'compose-upgrade', 'target': 'app'}]
-        with self.assertRaisesRegex(ValueError, 'requires --apply'):
+        with self.assertRaisesRegex(ValueError, 'disabled'):
             self.check()
-        self.assertEqual(self.check(apply=True), [['svc-update', 'upgrade', 'app', '--apply']])
+        with self.assertRaisesRegex(ValueError, 'mutation disabled'):
+            self.check(apply=True)
+
+    def test_rejects_thin_or_container_inventory(self):
+        for change in ({'packages': {}}, {'environment': {'kind': 'container'}}):
+            previous = {key: self.inventory[key] for key in change}
+            self.inventory.update(change)
+            self.inventory_bytes = json.dumps(self.inventory).encode()
+            self.plan['inventory_sha256'] = digest(self.inventory_bytes)
+            with self.assertRaisesRegex(ValueError, 'incomplete'):
+                self.check()
+            self.inventory.update(previous)
+
+    def test_records_failed_and_pending_steps(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path, result = run(self.plan, self.inventory,
+                               [['/bin/true'], ['/bin/false'], ['/bin/true']], Path(tmp), 'a' * 64)
+            self.assertEqual(result['status'], 'failed')
+            self.assertEqual([s['status'] for s in result['steps']],
+                             ['completed', 'failed', 'not_executed'])
+            self.assertEqual(json.loads(path.read_text())['postconditions'], 'not_assessed')
+
+    def test_signal_records_unknown_and_pending(self):
+        for signum in (signal.SIGINT, signal.SIGTERM):
+          with self.subTest(signum=signum), tempfile.TemporaryDirectory() as tmp:
+            runner = ("from tools.run_plan import run; from pathlib import Path; "
+                      "run({'plan_id':'signal-test'}, {'hostname':'lab-host'}, "
+                      "[['/bin/sleep','30'],['/bin/true']], Path(%r), 'a'*64)" % tmp)
+            proc = subprocess.Popen([sys.executable, '-c', runner], cwd=Path(__file__).resolve().parents[1])
+            try:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    paths = list(Path(tmp).glob('signal-test-*.json'))
+                    if paths and json.loads(paths[0].read_text())['steps'][0]['status'] == 'running':
+                        break
+                    time.sleep(.02)
+                else:
+                    self.fail('runner did not enter running state')
+                proc.send_signal(signum)
+                proc.wait(timeout=5)
+                record = json.loads(paths[0].read_text())
+                self.assertEqual(record['status'], 'interrupted')
+                self.assertEqual([s['status'] for s in record['steps']],
+                                 ['result_unknown', 'not_executed'])
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
 
     def test_rejects_wrong_host_and_stale_inventory(self):
         self.plan['hostname'] = 'another-host'
