@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "plan_id": "example-001",
+  "hostname": "replace-with-inventory-hostname",
+  "inventory_sha256": "replace-with-sha256-of-inventory-file",
+  "purpose": "Check the application before a separate upgrade decision",
+  "preconditions": ["Confirm the installed updater and per-service recovery exercise"],
+  "operations": [
+    {"kind": "service-status", "target": "ssh.service"},
+    {"kind": "compose-status"},
+    {"kind": "compose-check", "target": "app"}
+  ],
+  "verification": ["Read results and assess the next eligible image"],
+  "rollback": "No changes in this example"
+}

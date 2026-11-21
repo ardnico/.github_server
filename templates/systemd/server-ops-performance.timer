@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily server performance report
+
+[Timer]
+OnCalendar=*-*-* 09:15:00
+Persistent=true
+Unit=server-ops-performance.service
+
+[Install]
+WantedBy=timers.target

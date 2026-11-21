@@ -1,0 +1,13 @@
+[Unit]
+Description=Generate server performance report
+
+[Service]
+Type=oneshot
+User=server-ops-reporter
+WorkingDirectory=/opt/server-ops-kit
+ExecStart=/usr/bin/python3 /opt/server-ops-kit/tools/periodic_report.py --kind performance --config /etc/server-ops-kit/report.json --output-dir /var/lib/server-ops-kit/reports --send
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/server-ops-kit/reports

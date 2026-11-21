@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily server OS security report
+
+[Timer]
+OnCalendar=*-*-* 09:00:00
+Persistent=true
+Unit=server-ops-security.service
+
+[Install]
+WantedBy=timers.target
