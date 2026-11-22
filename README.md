@@ -1,6 +1,6 @@
-# Server Ops Kit for GitHub Copilot (v0.2 preview)
+# Server Ops Kit for Copilot / Codex / Claude Code (v0.2 preview)
 
-Linux サーバの構成把握、作業計画、限定された実行と記録を扱う Copilot Agent キット。VS Code の Copilot harness と、操作対象にアクセスできる管理端末で使う。クラウド Agent が社内ホストへ接続できることは前提にしない。
+Linux サーバの構成把握、作業計画、限定された実行と記録を扱う Agent キット。Copilot、Codex、Claude Code と、操作対象にアクセスできる管理端末で使う。クラウド Agent が社内ホストへ接続できることは前提にしない。
 
 License: MIT。公開リポジトリに実ホストの台帳、作業記録、認証情報をコミットしない。`.gitignore` は誤追加防止の補助であり、秘密情報のアクセス制御を代替しない。
 
@@ -14,12 +14,13 @@ License: MIT。公開リポジトリに実ホストの台帳、作業記録、�
 
 ## 配置後のファイル構成
 
-以下は Ubuntu の検証 VM `lab-ops-01` に、Copilot を `kit-reader` で動かす例。リポジトリを開く作業領域と、root が systemd から実行するコードを分ける。`kit-reader` に Docker・sudo 権限は与えない。
+以下は Ubuntu の検証 VM `lab-ops-01` に、Agent を `kit-reader` で動かす例。リポジトリを開く作業領域と、root が systemd から実行するコードを分ける。`kit-reader` に Docker・sudo 権限は与えない。
 
 | 配置先 | ファイル・ディレクトリ | 所有者と用途 |
 | --- | --- | --- |
-| `/home/kit-reader/server-ops-workspace/` | `README.md`、`AGENTS.md`、`.gitignore`、`LICENSE`、`tests/` | `kit-reader` が VS Code で開くリポジトリ。テストと運用指示を参照する。 |
-| 同上 | `.github/agents/*.agent.md`、`.github/skills/*/SKILL.md` と `linux-inventory/scripts/collect.py` | Copilot の Agent 4件、Skill 5件、台帳収集スクリプト。 |
+| `/home/kit-reader/server-ops-workspace/` | `README.md`、`AGENTS.md`、`.gitignore`、`LICENSE`、`tests/` | `kit-reader` が Agent から開くリポジトリ。テストと運用指示を参照する。 |
+| 同上 | `.github/agents/*.agent.md`、`.github/skills/*/SKILL.md` と `linux-inventory/scripts/collect.py` | Copilot の Agent 4件、Skill 5件と台帳収集スクリプト（正本）。 |
+| 同上 | `AGENTS.md`、`CLAUDE.md`、`.codex/agents/*.toml`、`.claude/agents/*.md`、`.agents/skills/*/SKILL.md`、`.claude/skills/*/SKILL.md` | Codex と Claude Code の入口、役割、Skill のアダプター。Skill 本文の正本は `.github/skills/`。 |
 | 同上 | `tools/run_plan.py`、`tools/compose_snapshot.py`、`tools/periodic_report.py`、`templates/` | 非特権の読み取り・記録ツールと計画・systemd ひな形。作業リポジトリのコードを root で実行しない。 |
 | 同上 | `.server-ops/hosts/`、`.server-ops/plans/`、`.server-ops/runs/`、`.server-ops/reports/` | `kit-reader` の実行時データ。Git の追跡対象外。台帳、計画、実行記録は公開しない。 |
 | `/opt/server-ops-kit/tools/` | `compose_snapshot.py`、`periodic_report.py` | 管理者が検査済みの版を別に配置し、root 所有・`kit-reader` 書込不可とする。root の発行 unit はこのコピーだけを実行。 |
@@ -77,6 +78,24 @@ root が発行するスナップショットの主要フィールドは次のと
 
 `1.34.0 → 1.34.1` は観測時点の候補であり、更新許可でも実行指示でもない。ランナーが終了 0 でも記録の `postconditions` は `not_assessed`。業務プローブや復旧確認を実施済みとは報告しない。
 
+## Codex / Claude Code の起動と段階別の確認
+
+| 製品 | 主担当の入口 | 委任先 | Skill の配置 |
+| --- | --- | --- | --- |
+| Copilot | VS Code で `server-ops` Agent を選択 | `.github/agents/` の 3 役 | `.github/skills/` |
+| Codex | ルートの `AGENTS.md` を読むセッションで「Server Ops Kit の段階 1」と依頼 | `.codex/agents/` の 3 役 | `.agents/skills/` |
+| Claude Code | ルートで `claude --agent server-ops` | `.claude/agents/` の 3 役 | `.claude/skills/` |
+
+Skill アダプターは製品に見つけてもらうための短い定義で、`.github/skills/<name>/SKILL.md` を参照する。スクリプト、テンプレート、ランナーは全製品で共有する。Codex のカスタム Agent はサブエージェントの定義であり、主担当は `AGENTS.md`。各製品で委任・Skill 選択・質問ツールの提供状況が違うため、起動時に読み込みを確認する。質問ツールがない場合は会話で必要な入力を尋ねる。
+
+使い捨て VM の非特権アカウントで、最初は次の依頼から始める。対象のホスト名とローカル実行の可否が不明なら、Agent が確認する。コンテナ内で試した結果をホストの台帳として扱わない。
+
+> この検証 VM を Server Ops Kit の段階 1 に登録したい。対象と目的を確認し、不足する入力は質問して。`linux-inventory` を使って読み取り台帳を作り、取得時刻・失敗した項目・未確認事項を報告して。計画作成と実行はまだ行わない。
+
+台帳を確認した次のターンで、`lab-ops-01` の `ssh.service` 状態確認など、許可操作の読み取り計画を依頼する。さらに**別のターンで**対象ホストと計画 ID を指定して読み取り実行を依頼する。計画や SHA の生成を同一指示で実行許可とみなさない。実行結果の `postconditions: not_assessed`、追加作業の計画への差戻し、Docker・sudo の権限拒否を確認する。Compose の確認は root 発行スナップショットの配置と timer の健全性を管理者が確認した VM だけで試す。実ホストや既存サービスを使わない。
+
+Codex のサブエージェント定義は独立した読み取り専用サンドボックスを作らず、親セッションの権限を継承する。Claude Code も親の許可モードによって Agent 側の制限が上書きされ得る。両者の動作確認と OS 権限の分離が済むまで本番運用に進めない。
+
 ## 利用開始
 
 ```sh
@@ -91,13 +110,13 @@ sha256sum .server-ops/plans/my-plan.json
 python3 tools/run_plan.py --plan .server-ops/plans/my-plan.json --inventory .server-ops/hosts/host.json --confirm-sha <planのSHA256>
 ```
 
-計画の SHA は**最終編集後**に計算する。`run_plan.py` はホスト名、台帳のハッシュ、取得範囲・完全性・鮮度を照合し、未知の操作・任意のシェル文字列を拒否する。SHA 照合は変更検出であり、人の承認を証明しない。Copilot の `execute` 権限自体は OS の権限境界ではない。管理権限や Docker ソケットへアクセスできない検証用アカウントでのみ使用する。読み取りの外部コマンドにも副作用や通信の可能性があり、各ツールの設定を事前に確認する。
+計画の SHA は**最終編集後**に計算する。`run_plan.py` はホスト名、台帳のハッシュ、取得範囲・完全性・鮮度を照合し、未知の操作・任意のシェル文字列を拒否する。SHA 照合は変更検出であり、人の承認を証明しない。Agent の端末権限自体は OS の権限境界ではない。管理権限や Docker ソケットへアクセスできない検証用アカウントでのみ使用する。読み取りの外部コマンドにも副作用や通信の可能性があり、各ツールの設定を事前に確認する。
 
 実行記録は開始前から 0600 で保存し、各操作を `not_executed` / `running` / `completed` / `failed` / `result_unknown` に分ける。SIGINT/SIGTERM 中断後の対象状態は `result_unknown` として現物を照合する。SIGKILL・電源断では、終了時刻なしの `running` が残るか、記録自体が失われる可能性がある。これも結果不明とし、元の操作、対象の現物、updater の journal を管理者が照合するまで再実行しない。終了コード 0 でも外形・業務条件は `postconditions: not_assessed` のまま。更新の成功や本番運用可否を意味しない。
 
 ## 配置
 
-キット全体（`.github/`、`tools/`、`templates/`、`tests/`、`README.md`、`AGENTS.md`、`.gitignore`）を Copilot の対象リポジトリへ配置する。管理ホストに Python 3.11 以降が必要。実行時データは `.server-ops/` に保存し Git へコミットしない。収集 CLI が終了 2 のときは部分取得なので、記録を確認し再収集する。コンテナ内の収集結果をホストの台帳として使わない。
+キット全体（`.github/`、`.codex/`、`.agents/`、`.claude/`、`tools/`、`templates/`、`tests/`、`README.md`、`AGENTS.md`、`CLAUDE.md`、`.gitignore`）を Copilot の対象リポジトリへ配置する。管理ホストに Python 3.11 以降が必要。実行時データは `.server-ops/` に保存し Git へコミットしない。収集 CLI が終了 2 のときは部分取得なので、記録を確認し再収集する。コンテナ内の収集結果をホストの台帳として使わない。
 
 ### Compose の非特権読み取り
 
