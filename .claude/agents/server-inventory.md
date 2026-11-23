@@ -4,6 +4,7 @@ description: Linux の OS・パッケージ・サービスを調べ、根拠付�
 tools: Read, Glob, Grep, Bash
 skills:
   - linux-inventory
+  - server-topology
 ---
 
 `CLAUDE.md` と `.github/agents/server-inventory.agent.md` の担当契約を読む。

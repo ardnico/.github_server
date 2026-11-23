@@ -6,7 +6,7 @@ License: MIT。公開リポジトリに実ホストの台帳、作業記録、�
 
 ## ゴールと段階
 
-1. `server-ops` → `server-inventory` が OS、パッケージ、稼働サービスを読み取り、`.server-ops/` に根拠・取得時刻付き台帳を保存する。
+1. `server-ops` → `server-inventory` が OS、パッケージ、稼働サービスを読み取り、`.server-ops/` に根拠・取得時刻付き台帳を保存する。必要なら構成 JSON と人向け図も作る。
 2. `server-ops` → `maintenance-planner` が要求を調査し、影響、前提、実行・検証・復旧条件を含む `plan.json` と人向け計画を作る。
 3. `server-ops` → `maintenance-executor` が読み取り計画を `tools/run_plan.py` で実行し、各操作の終了コードと結果を保存する。追加対応は新しい計画に戻す。
 
@@ -19,10 +19,10 @@ License: MIT。公開リポジトリに実ホストの台帳、作業記録、�
 | 配置先 | ファイル・ディレクトリ | 所有者と用途 |
 | --- | --- | --- |
 | `/home/kit-reader/server-ops-workspace/` | `README.md`、`AGENTS.md`、`.gitignore`、`LICENSE`、`tests/` | `kit-reader` が Agent から開くリポジトリ。テストと運用指示を参照する。 |
-| 同上 | `.github/agents/*.agent.md`、`.github/skills/*/SKILL.md` と `linux-inventory/scripts/collect.py` | Copilot の Agent 4件、Skill 5件と台帳収集スクリプト（正本）。 |
+| 同上 | `.github/agents/*.agent.md`、`.github/skills/*/SKILL.md` と `linux-inventory/scripts/collect.py` | Copilot の Agent 4件、Skill 6件と台帳収集スクリプト（正本）。 |
 | 同上 | `AGENTS.md`、`CLAUDE.md`、`.codex/agents/*.toml`、`.claude/agents/*.md`、`.agents/skills/*/SKILL.md`、`.claude/skills/*/SKILL.md` | Codex と Claude Code の入口、役割、Skill のアダプター。Skill 本文の正本は `.github/skills/`。 |
-| 同上 | `tools/run_plan.py`、`tools/compose_snapshot.py`、`tools/periodic_report.py`、`templates/` | 非特権の読み取り・記録ツールと計画・systemd ひな形。作業リポジトリのコードを root で実行しない。 |
-| 同上 | `.server-ops/hosts/`、`.server-ops/plans/`、`.server-ops/runs/`、`.server-ops/reports/` | `kit-reader` の実行時データ。Git の追跡対象外。台帳、計画、実行記録は公開しない。 |
+| 同上 | `tools/run_plan.py`、`tools/build_topology.py`、`tools/compose_snapshot.py`、`tools/periodic_report.py`、`templates/` | 非特権の読み取り・記録・構成図生成ツールと計画・systemd ひな形。作業リポジトリのコードを root で実行しない。 |
+| 同上 | `.server-ops/hosts/`、`.server-ops/topology/`、`.server-ops/plans/`、`.server-ops/runs/`、`.server-ops/reports/` | `kit-reader` の実行時データ。Git の追跡対象外。台帳、構成図、計画、実行記録は公開しない。 |
 | `/opt/server-ops-kit/tools/` | `compose_snapshot.py`、`periodic_report.py` | 管理者が検査済みの版を別に配置し、root 所有・`kit-reader` 書込不可とする。root の発行 unit はこのコピーだけを実行。 |
 | `/etc/systemd/system/` | `server-ops-compose-snapshot.{service,timer}`、必要時のみ `server-ops-{security,performance}.{service,timer}` | root が設置・管理する unit。パス・権限を確認してから有効化。 |
 | `/etc/svc-update/config.toml`、`/var/backups/svc-update/` | updater の設定とバックアップ・ロック | root 専用。`kit-reader` には公開しない。 |
@@ -77,6 +77,29 @@ root が発行するスナップショットの主要フィールドは次のと
 ```
 
 `1.34.0 → 1.34.1` は観測時点の候補であり、更新許可でも実行指示でもない。ランナーが終了 0 でも記録の `postconditions` は `not_assessed`。業務プローブや復旧確認を実施済みとは報告しない。
+
+## 段階 1: 根拠付き構成図
+
+`tools/build_topology.py` は、完全な単一ホスト台帳から Agent 向け `.json` と人向け `.md` を生成する。ネットワーク探索、リモート接続、設定本文の取り込みはしない。追加情報がなければ台帳取得時に稼働していたサービス名だけを一覧にし、**依存関係の図は未作成**とする。サービス名だけで接続先を推定しない。
+
+```sh
+python3 tools/build_topology.py \
+  --inventory .server-ops/hosts/lab-ops-01.json \
+  --output-prefix .server-ops/topology/lab-ops-01
+```
+
+利用者の確認や設定の限定的な観測によって関係が判明した場合は、`templates/topology-claims.example.json` を参考に `.server-ops/topology/lab-ops-01-claims.json` を作る。`hostname` と `inventory_sha256` を元の台帳に一致させ、node と edge に根拠の種類、参照名、時刻を記入する。例にある `web.service → db-01` は**仮の関係**で、台帳に `web.service` がなければ入力として拒否される。
+
+```sh
+python3 tools/build_topology.py \
+  --inventory .server-ops/hosts/lab-ops-01.json \
+  --claims .server-ops/topology/lab-ops-01-claims.json \
+  --output-prefix .server-ops/topology/lab-ops-01-reviewed
+```
+
+JSON にはホスト、サービス、追加したノードと関係、各根拠、台帳 SHA、未評価範囲を含む。Markdown はサービス一覧、登録済み関係だけの Mermaid 図、根拠表、未評価範囲を示す。`hypothesis` の関係は破線で示す。`user-confirmed` と `config-observed` も根拠の種類として区別し、相互に読み替えない。出力は既存ファイルを上書きせず、専用の 0700 ディレクトリに 0600 で作る。実ホストの構成・内部名を含むため、公開リポジトリへコミットしない。サービス間の関係が未登録なら、必要な情報を Agent が利用者に質問する。
+
+この情報は台帳を取得した時点の断面。登録した依存関係が現在も成立する保証や、ネットワーク全体を網羅した証明ではない。段階 2 の計画に使う前に対象・鮮度・根拠を再確認する。
 
 ## Codex / Claude Code の起動と段階別の確認
 

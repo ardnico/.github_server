@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "hostname": "lab-ops-01",
+  "inventory_sha256": "<対象台帳ファイルの SHA-256>",
+  "nodes": [
+    {
+      "id": "db-01",
+      "type": "host",
+      "label": "db-01",
+      "evidence": {
+        "kind": "user-confirmed",
+        "source_ref": "user:reviewed-design",
+        "observed_at": "2026-11-23T09:00:00+09:00"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "service:web.service",
+      "to": "db-01",
+      "relationship": "depends-on",
+      "evidence": {
+        "kind": "user-confirmed",
+        "source_ref": "user:reviewed-design",
+        "observed_at": "2026-11-23T09:00:00+09:00"
+      }
+    }
+  ]
+}
