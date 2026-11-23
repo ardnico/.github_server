@@ -103,6 +103,7 @@ def build(inventory_bytes, inventory_path, claims=None):
     return {'schema_version': 1, 'hostname': host, 'inventory_path': str(inventory_path),
             'inventory_sha256': inv_hash, 'observed_at': observed,
             'nodes': nodes, 'edges': edges,
+            'claim_node_ids': [node['id'] for node in claims['nodes']],
             'unassessed': ['service dependencies not covered by claims',
                            'network paths and external reachability',
                            'backup and recovery paths']}
@@ -110,7 +111,9 @@ def build(inventory_bytes, inventory_path, claims=None):
 
 def render(topology):
     host = topology['hostname']
-    services = [n for n in topology['nodes'] if n['type'] == 'service']
+    claim_ids = set(topology.get('claim_node_ids', []))
+    services = [n for n in topology['nodes'] if n['type'] == 'service' and n['id'] not in claim_ids]
+    claim_nodes = [n for n in topology['nodes'] if n['id'] in claim_ids]
     manual = [e for e in topology['edges'] if e['relationship'] != 'runs-on']
     lines = [f'# {host} の構成', '', f'台帳取得時刻: {topology["observed_at"]}',
              f'台帳 SHA-256: `{topology["inventory_sha256"]}`',
@@ -131,6 +134,14 @@ def render(topology):
         lines += ['```', '', '破線は仮説。実線にも根拠の種類と時刻を下表で確認する。']
     else:
         lines.append('未作成。依存・通信・保存先の関係は未登録。サービス名から推測して線を引かない。')
+    if claim_nodes:
+        lines += ['', '## 追加ノードの根拠', '',
+                  '| ノード ID | 表示名 | 種類 | 根拠 | 取得時刻 |',
+                  '| --- | --- | --- | --- | --- |']
+        for node in claim_nodes:
+            ev = node['evidence']
+            lines.append(f'| `{node["id"]}` | {node["label"]} | {node["type"]} | '
+                         f'{ev["kind"]}: {ev["source_ref"]} | {ev["observed_at"]} |')
     lines += ['', '## 関係の根拠', '', '| 始点 → 終点 | 関係 | 根拠 | 取得時刻 |',
               '| --- | --- | --- | --- |']
     for e in manual:

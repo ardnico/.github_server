@@ -29,13 +29,18 @@ class TopologyTests(unittest.TestCase):
     def test_reviewed_claim_can_be_drawn_with_provenance(self):
         ev = {'kind': 'user-confirmed', 'source_ref': 'user:reviewed',
               'observed_at': '2026-11-22T13:05:00+00:00'}
+        node_ev = {'kind': 'hypothesis', 'source_ref': 'user:node-note',
+                   'observed_at': '2026-11-22T13:07:00+00:00'}
         claims = {'schema_version': 1, 'hostname': 'lab-01', 'inventory_sha256': self.sha,
-                  'nodes': [{'id': 'db-01', 'type': 'host', 'label': 'db-01', 'evidence': ev}],
+                  'nodes': [{'id': 'db-01', 'type': 'host', 'label': 'db-01', 'evidence': node_ev}],
                   'edges': [{'from': 'service:ssh.service', 'to': 'db-01',
                              'relationship': 'connects-to', 'evidence': ev}]}
         topology = build(self.content, Path('host.json'), claims)
         self.assertEqual(len(topology['edges']), 2)
-        self.assertIn('user-confirmed: user:reviewed', render(topology))
+        markdown = render(topology)
+        self.assertIn('user-confirmed: user:reviewed | 2026-11-22T13:05:00+00:00', markdown)
+        self.assertIn('| `db-01` | db-01 | host | hypothesis: user:node-note | '
+                      '2026-11-22T13:07:00+00:00 |', markdown)
         claims['inventory_sha256'] = '0' * 64
         with self.assertRaisesRegex(ValueError, 'do not match'):
             build(self.content, Path('host.json'), claims)
