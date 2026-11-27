@@ -19,7 +19,7 @@ License: MIT。公開リポジトリに実ホストの台帳、作業記録、�
 | 配置先 | ファイル・ディレクトリ | 所有者と用途 |
 | --- | --- | --- |
 | `/home/kit-reader/server-ops-workspace/` | `README.md`、`AGENTS.md`、`.gitignore`、`LICENSE`、`tests/` | `kit-reader` が Agent から開くリポジトリ。テストと運用指示を参照する。 |
-| 同上 | `.github/agents/*.agent.md`、`.github/skills/*/SKILL.md` と `linux-inventory/scripts/collect.py` | Copilot の Agent 4件、Skill 6件と台帳収集スクリプト（正本）。 |
+| 同上 | `.github/agents/*.agent.md`、`.github/skills/*/SKILL.md` と `linux-inventory/scripts/collect.py` | Copilot の Agent 4件、Skill 10件と台帳収集スクリプト（正本）。 |
 | 同上 | `AGENTS.md`、`CLAUDE.md`、`.codex/agents/*.toml`、`.claude/agents/*.md`、`.agents/skills/*/SKILL.md`、`.claude/skills/*/SKILL.md` | Codex と Claude Code の入口、役割、Skill のアダプター。Skill 本文の正本は `.github/skills/`。 |
 | 同上 | `tools/run_plan.py`、`tools/build_topology.py`、`tools/compose_snapshot.py`、`tools/periodic_report.py`、`templates/` | 非特権の読み取り・記録・構成図生成ツールと計画・systemd ひな形。作業リポジトリのコードを root で実行しない。 |
 | 同上 | `.server-ops/hosts/`、`.server-ops/topology/`、`.server-ops/plans/`、`.server-ops/runs/`、`.server-ops/reports/` | `kit-reader` の実行時データ。Git の追跡対象外。台帳、構成図、計画、実行記録は公開しない。 |
@@ -181,3 +181,9 @@ systemctl enable --now server-ops-compose-snapshot.timer
 3. `.github/skills/periodic-ops/` のレポートと timer を検証サーバで評価し、対象ごとの情報源・メール宛先・保存先を確定後に導入する。Skills は定期実行器ではない。
 
 参照: [Copilot custom agents](https://docs.github.com/en/copilot/reference/custom-agents-configuration), [agent skills](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-cloud-agent/add-skills), [Compose Update Manager](https://github.com/ardnico/compose-update-manager/blob/main/README.md)。
+
+## 対象別の読み取り調査
+
+段階 2 で対象に応じて `systemd-inspect`、`docker-inspect`、`vm-inspect`（VirtualBox）、`db-inspect` を使う。Docker は既存の Compose スナップショットと、管理者が機密情報を除いて提供した抜粋を参照する。Kubernetes は検証環境が揃うまで保留。
+
+複数人での調査は [調査記録と引き継ぎ](docs/investigation-record.md) に従う。記入例は [investigation.example.json](templates/investigation.example.json)。

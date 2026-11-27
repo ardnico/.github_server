@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "case_id": "lab-ssh-check",
+  "target": {
+    "host": "lab-ops-01",
+    "service": "ssh.service"
+  },
+  "status": "waiting_for_answer",
+  "assignee": "ops-a",
+  "next_action": {
+    "assignee": "ops-b",
+    "question": "認証依存先と確認元を教えてください。",
+    "resume_when": "依存先の用途・確認元・確認時刻が揃う"
+  },
+  "observations": [
+    {
+      "id": "obs-1",
+      "observed_at": "2026-11-27T06:00:00Z",
+      "source": "inventory",
+      "result": "台帳に ssh.service が稼働中として記載",
+      "unverified": [
+        "新規ログイン",
+        "認証依存先"
+      ]
+    }
+  ],
+  "events": [
+    {
+      "at": "2026-11-27T06:00:00Z",
+      "actor": "ops-a",
+      "from_status": "investigating",
+      "to_status": "waiting_for_answer",
+      "assignee_before": "ops-a",
+      "assignee_after": "ops-a",
+      "reason": "認証依存先が未確認",
+      "observation_ids": [
+        "obs-1"
+      ]
+    }
+  ],
+  "plan": null
+}
