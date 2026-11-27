@@ -28,10 +28,35 @@ def read_command(args):
     try:
         run = subprocess.run(args, text=True, capture_output=True, timeout=30, check=False)
         if run.returncode != 0:
-            return {'error': f'exit {run.returncode}', 'values': []}
-        return {'values': run.stdout.splitlines()}
+            return {'command': args, 'status': 'unassessed', 'error': f'exit {run.returncode}', 'values': []}
+        return {'command': args, 'status': 'complete', 'values': run.stdout.splitlines()}
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return {'error': type(exc).__name__, 'values': []}
+        return {'command': args, 'status': 'unassessed', 'error': type(exc).__name__, 'values': []}
+
+
+def environment():
+    if Path('/.dockerenv').exists() or Path('/run/.containerenv').exists():
+        return {'kind': 'container', 'host_scope': 'unassessed'}
+    try:
+        detected = subprocess.run(['systemd-detect-virt', '--container'], text=True,
+                                  capture_output=True, timeout=5, check=False)
+        if detected.returncode == 0:
+            return {'kind': 'container', 'host_scope': 'unassessed', 'detector': 'systemd-detect-virt'}
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        cgroup = Path('/proc/1/cgroup').read_text(encoding='utf-8')
+        if re.search(r'/(docker|libpod|kubepods|containerd)[/-]', cgroup):
+            return {'kind': 'container', 'host_scope': 'unassessed'}
+    except OSError:
+        return {'kind': 'unknown', 'host_scope': 'unassessed'}
+    try:
+        init = Path('/proc/1/comm').read_text(encoding='utf-8').strip()
+    except OSError:
+        return {'kind': 'unknown', 'host_scope': 'unassessed'}
+    if init not in ('systemd', 'init'):
+        return {'kind': 'unknown', 'host_scope': 'unassessed', 'reason': 'PID 1 is not a known host init'}
+    return {'kind': 'host_or_vm', 'host_scope': 'local'}
 
 
 def collect():
@@ -46,21 +71,29 @@ def collect():
         packages = read_command(['rpm', '-qa', '--qf', '%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n'])
     else:
         manager = 'unsupported'
-        packages = {'values': [], 'error': 'unsupported distribution'}
+        packages = {'command': None, 'status': 'unassessed', 'values': [], 'error': 'unsupported distribution'}
     services = read_command(['systemctl', 'list-units', '--type=service', '--state=running', '--no-legend', '--no-pager', '--plain'])
     # Keep unit names only. Descriptions and logs can contain private details.
     services['values'] = [line.split()[0] for line in services['values'] if line.split()]
     kernel = read_command(['uname', '-r'])
+    if kernel['status'] == 'complete' and (not kernel['values'] or not kernel['values'][0].strip()):
+        kernel.update(status='unassessed', error='empty kernel release')
+    env = environment()
+    status = ('complete' if release['ID'] and env['kind'] == 'host_or_vm' and
+              all(field['status'] == 'complete' for field in (packages, services, kernel)) else 'partial')
     return {
         'schema_version': 1,
         'observed_at': datetime.now(timezone.utc).isoformat(),
         'hostname': socket.gethostname(),
         'os_release': release,
         'kernel': kernel['values'][0] if kernel['values'] else None,
+        'kernel_observation': kernel,
+        'environment': env,
+        'collection_status': status,
         'package_manager': manager,
         'packages': packages,
         'running_service_names': services,
-        'scope': 'local host; configuration contents, logs, secrets and network discovery excluded',
+        'scope': 'container-local inventory and shared kernel; host outside container unassessed' if env['kind'] == 'container' else 'local host/VM; configuration contents, logs, secrets and network discovery excluded',
     }
 
 
@@ -75,8 +108,9 @@ def main():
         json.dump(data, output, ensure_ascii=False, indent=2)
         output.write('\n')
     args.output.chmod(0o600)
-    print(f"saved {args.output} ({len(data['packages']['values'])} packages)")
+    print(f"saved {args.output}: {data['collection_status']} ({len(data['packages']['values'])} packages)")
+    return 0 if data['collection_status'] == 'complete' else 2
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())
