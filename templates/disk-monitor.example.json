@@ -1,0 +1,12 @@
+{
+  "threshold_percent": 90,
+  "consecutive_samples": 3,
+  "max_sample_gap_seconds": 420,
+  "ssh_config": "/etc/server-ops-kit/monitor-ssh.conf",
+  "targets": [
+    {"id": "controller", "mount": "/", "assignee": "ops-local",
+     "mail": {"smtp_host": "localhost", "smtp_port": 25, "mail_from": "monitor@example.invalid", "mail_to": ["local-ops@example.invalid"]}},
+    {"id": "lab-remote", "ssh_alias": "lab-monitor", "mount": "/", "assignee": "ops-remote",
+     "mail": {"smtp_host": "localhost", "smtp_port": 25, "mail_from": "monitor@example.invalid", "mail_to": ["remote-ops@example.invalid"]}}
+  ]
+}
