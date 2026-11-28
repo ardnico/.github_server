@@ -8,5 +8,11 @@
      "mail": {"smtp_host": "localhost", "smtp_port": 25, "mail_from": "monitor@example.invalid", "mail_to": ["local-ops@example.invalid"]}},
     {"id": "lab-remote", "ssh_alias": "lab-monitor", "mount": "/", "assignee": "ops-remote",
      "mail": {"smtp_host": "localhost", "smtp_port": 25, "mail_from": "monitor@example.invalid", "mail_to": ["remote-ops@example.invalid"]}}
+  ],
+  "resource_targets": [
+    {"id": "controller", "thresholds": {"cpu": 90, "memory": 90}, "assignee": "ops-local",
+     "mail": {"smtp_host": "localhost", "smtp_port": 25, "mail_from": "monitor@example.invalid", "mail_to": ["local-ops@example.invalid"]}},
+    {"id": "lab-remote", "ssh_alias": "lab-resource-monitor", "thresholds": {"cpu": 90, "memory": 90}, "assignee": "ops-remote",
+     "mail": {"smtp_host": "localhost", "smtp_port": 25, "mail_from": "monitor@example.invalid", "mail_to": ["remote-ops@example.invalid"]}}
   ]
 }
