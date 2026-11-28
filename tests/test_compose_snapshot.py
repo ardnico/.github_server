@@ -89,6 +89,7 @@ class SnapshotTests(unittest.TestCase):
                     'status_observed_at': now.isoformat(), 'status': {}, 'checks': {},
                     'publication_status': 'complete'}
             file.write_text(json.dumps(data))
+            file.chmod(0o600)
             self.assertEqual(mod.read_snapshot(file, enforce_ownership=False, now=now), data)
             data['publication_status'] = 'unavailable'
             file.write_text(json.dumps(data))
