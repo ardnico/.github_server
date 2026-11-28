@@ -187,3 +187,19 @@ systemctl enable --now server-ops-compose-snapshot.timer
 段階 2 で対象に応じて `systemd-inspect`、`docker-inspect`、`vm-inspect`（VirtualBox）、`db-inspect` を使う。Docker は既存の Compose スナップショットと、管理者が機密情報を除いて提供した抜粋を参照する。Kubernetes は検証環境が揃うまで保留。
 
 複数人での調査は [調査記録と引き継ぎ](docs/investigation-record.md) に従う。記入例は [investigation.example.json](templates/investigation.example.json)。
+
+## cron でディスクを監視する
+
+`templates/disk-monitor.example.json` を専用の非特権ユーザー向けにコピーし、対象のホスト ID・マウント・担当者・宛先を設定する。5 分間隔で 90% 以上を 3 回連続観測すると、ホストとマウントの組ごとに案件を起票する。設定より長い採取間隔や採取失敗で連続回数をリセットする。採取失敗は別案件として通知し、既存の容量案件は正常値を観測した時点で閉じる。
+
+- ローカルは `df -Pk` を使用する。リモートは監視専用 SSH 設定の登録済み alias を使う。既知のホスト鍵を事前登録し、サーバ側で専用鍵の強制コマンドを `LC_ALL=C df -Pk` に固定する。TTY と転送を禁止する。設定と鍵は保守担当が管理する。
+- Agent を有効化するには、設定の `codex_binary` に Codex CLI の絶対パスを指定する。認証と通信先を確認した専用実行環境を用意する。監視用鍵を見せないため、実運用では分離した環境へ渡す管理者所有のラッパーを指定できる。Agent に渡すのは対象マウントと数値の推移。出力は原因候補と追加確認案として扱う。
+- `--send` を付けると、対象の担当者宛に設定済みの SMTP リレーで通知する。Agent の失敗・タイムアウト時も観測結果を通知する。リレー受付と最終配送は別。二重通知を避けるため、同一案件での送信失敗・送信結果不明は記録し、再送は運用担当が判断する。
+
+試行と本運用では別の状態ディレクトリを使う。通知なしで始める場合は `--send` を外す。Agent への送信も無効にする場合は `codex_binary` を設定しない。
+
+```cron
+*/5 * * * * /usr/bin/python3 /opt/server-ops-kit/tools/monitor_disk.py --config /etc/server-ops-kit/disk-monitor.json --state-dir /var/lib/server-ops-monitor --send
+```
+
+開始前に、同じユーザーで単発実行して設定、SSH、出力権限、テスト用メールを確認する。案件 JSON と状態は専用の 0700 ディレクトリに保存する。重複実行はスキップする。CPU・メモリはこのディスク監視の次の拡張とする。
